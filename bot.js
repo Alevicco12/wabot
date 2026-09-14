@@ -1,3 +1,7 @@
+const express = require('express');
+const app = express();
+app.get('/', (req,res)=>res.send('Bot WhatsApp Online'));
+app.listen(process.env.PORT || 3000, ()=>console.log('Server web finto attivo'));
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
 const qrcode = require('qrcode-terminal')
 const Groq = require('groq-sdk')
