@@ -8,77 +8,50 @@ const pino = require('pino');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
+console.log("--- DEBUG AVVIO ---");
+console.log("GROQ_API_KEY presente?",!!process.env.GROQ_API_KEY);
+console.log("Inizia con:", process.env.GROQ_API_KEY?.substring(0, 7));
+
+if (!process.env.GROQ_API_KEY) {
+    console.error("❌ ERRORE: GROQ_API_KEY MANCANTE SU RENDER! Vai su Environment e aggiungila.");
+}
+
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 let qrCodeData = null;
-let botAttivo = true; // <-- INTERRUTTORE
+let botAttivo = true;
 let sock = null;
 
 async function startBot() {
     const { state, saveCreds } = await useMultiFileAuthState('auth_info_baileys');
-
-    sock = makeWASocket({
-        auth: state,
-        logger: pino({ level: 'silent' }),
-        browser: ["Bot Render", "Chrome", "1.0"]
-    });
-
+    sock = makeWASocket({ auth: state, logger: pino({ level: 'silent' }), browser: ["Bot Render", "Chrome", "1.0"] });
     sock.ev.on('creds.update', saveCreds);
-
     sock.ev.on('connection.update', async (update) => {
         const { connection, lastDisconnect, qr } = update;
-
-        if (qr) {
-            qrCodeData = qr;
-            console.log(`[${new Date().toLocaleTimeString()}] Nuovo QR generato - vai su /qr`);
-        }
-
+        if (qr) { qrCodeData = qr; console.log(`[${new Date().toLocaleTimeString()}] Nuovo QR - /qr`); }
         if (connection === 'close') {
-            const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-            console.log(`Connessione chiusa. Riconnetto: ${shouldReconnect}`);
+            const shouldReconnect = lastDisconnect?.error?.output?.statusCode!== DisconnectReason.loggedOut;
             if (shouldReconnect) startBot();
-        } else if (connection === 'open') {
-            console.log(`✅ BOT CONNESSO! Attivo: ${botAttivo}`);
-            qrCodeData = null;
-        }
+        } else if (connection === 'open') { console.log(`✅ BOT CONNESSO!`); qrCodeData = null; }
     });
 
     sock.ev.on('messages.upsert', async ({ messages }) => {
         const msg = messages[0];
         if (!msg.message || msg.key.remoteJid === 'status@broadcast') return;
-
         const jid = msg.key.remoteJid;
         const text = msg.message.conversation || msg.message.extendedTextMessage?.text || "";
         if (!text) return;
 
-        const nome = jid.split('@')[0];
-        
-        // --- COMANDI SOLO TU (messaggi inviati da te) ---
+        // Comandi tuoi
         if (msg.key.fromMe) {
-            if (text.toLowerCase() === '!pausa') {
-                botAttivo = false;
-                console.log(`⏸️ BOT MESSO IN PAUSA da te`);
-                await sock.sendMessage(jid, { text: '⏸️ Bot in pausa. Ora puoi parlare tu. Scrivi !attiva per riattivarmi.' });
-                return;
-            }
-            if (text.toLowerCase() === '!attiva') {
-                botAttivo = true;
-                console.log(`▶️ BOT RIATTIVATO da te`);
-                await sock.sendMessage(jid, { text: '▶️ Bot riattivato! Rispondo io di nuovo.' });
-                return;
-            }
-            return; // Se scrivi tu altro, il bot non risponde mai (evita doppie risposte)
-        }
-
-        // --- LOG ---
-        console.log(`[${new Date().toLocaleTimeString()}] Messaggio da ${nome}: ${text} | Bot attivo: ${botAttivo}`);
-
-        if (!botAttivo) {
-            console.log(` -> Ignorato perché in PAUSA`);
+            if (text.toLowerCase() === '!pausa') { botAttivo = false; await sock.sendMessage(jid, { text: '⏸️ Bot in pausa. Scrivi!attiva per riattivarmi.' }); return; }
+            if (text.toLowerCase() === '!attiva') { botAttivo = true; await sock.sendMessage(jid, { text: '▶️ Bot riattivato!' }); return; }
             return;
         }
 
-        // --- RISPOSTA GROQ ---
+        console.log(`Messaggio da ${jid}: ${text} | Attivo: ${botAttivo}`);
+        if (!botAttivo) return;
+
         try {
             await sock.sendPresenceUpdate('composing', jid);
             const completion = await groq.chat.completions.create({
@@ -90,26 +63,20 @@ async function startBot() {
             });
             const risposta = completion.choices[0].message.content;
             await sock.sendMessage(jid, { text: risposta });
-            console.log(` -> Risposto a ${nome}`);
         } catch (e) {
-            console.log(`ERRORE Groq/Baileys:`, e.message);
-            await sock.sendMessage(jid, { text: "Al momento ho un piccolo problema, riprova tra un attimo 🙏" });
+            console.log(`❌ ERRORE GROQ VERO:`, e.status, e.message, JSON.stringify(e.error || {}));
+            await sock.sendMessage(jid, { text: `Errore debug: ${e.message}` });
         }
     });
 }
 
-// --- WEB SERVER PER RENDER E QR ---
-app.get('/', (req, res) => res.send(`Bot ${botAttivo ? 'ATTIVO ✅' : 'IN PAUSA ⏸️'} - Vai su /qr per collegarlo`));
-
+app.get('/', (req, res) => res.send(`Bot ${botAttivo? 'ATTIVO ✅' : 'IN PAUSA ⏸️'} | Key Groq: ${process.env.GROQ_API_KEY? 'OK ✅' : 'MANCANTE ❌'} - Vai su /qr`));
 app.get('/qr', async (req, res) => {
-    if (!qrCodeData) return res.send('<h1>Bot già connesso! ✅</h1><p>Se vuoi ricollegarlo, vai su WhatsApp > Dispositivi collegati > Disconnetti e riavvia il servizio su Render.</p>');
+    if (!qrCodeData) return res.send('<h1>Bot già connesso! ✅</h1>');
     const qrImage = await QRCode.toDataURL(qrCodeData);
-    res.send(`<div style="text-align:center; margin-top:20px;"><h1>Scannerizza questo QR</h1><img src="${qrImage}" style="width:350px;"><p>WhatsApp > Dispositivi collegati > Collega dispositivo</p><p>Comandi: <b>!pausa</b> e <b>!attiva</b> (scrivili tu in chat)</p></div>`);
+    res.send(`<div style="text-align:center"><h1>QR</h1><img src="${qrImage}" style="width:350px"><p>!pausa e!attiva</p></div>`);
 });
+app.get('/debug', (req, res) => res.json({ groqKeyPresente:!!process.env.GROQ_API_KEY, inizioChiave: process.env.GROQ_API_KEY?.substring(0,10), botAttivo }));
 
-app.listen(PORT, () => console.log(`Server web attivo su porta ${PORT}`));
-
-// Anti-sleep log
-setInterval(() => console.log(`[KeepAlive] Bot ${botAttivo ? 'attivo' : 'in pausa'} - ${new Date().toLocaleTimeString()}`), 1000 * 60 * 5);
-
+app.listen(PORT, () => console.log(`Server su ${PORT}`));
 startBot();
