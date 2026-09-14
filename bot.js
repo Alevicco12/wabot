@@ -55,7 +55,7 @@ async function startBot() {
         try {
             await sock.sendPresenceUpdate('composing', jid);
             const completion = await groq.chat.completions.create({
-                model: "llama-3.1-8b-instant",
+                model: "openai/gpt-oss-20b",
                 messages: [
                     { role: "system", content: "Sei un assistente utile su WhatsApp. Rispondi breve, cordiale, in italiano." },
                     { role: "user", content: text }
