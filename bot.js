@@ -1,46 +1,28 @@
 const express = require('express');
+const qrcode = require('qrcode');
+const { Client, LocalAuth } = require('whatsapp-web.js');
+
 const app = express();
-app.get('/', (req,res)=>res.send('Bot WhatsApp Online'));
-app.listen(process.env.PORT || 3000, ()=>console.log('Server web finto attivo'));
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys')
-const qrcode = require('qrcode-terminal')
-const Groq = require('groq-sdk')
-require('dotenv').config()
-const groq = new Groq({ apiKey: process.env.GROQ_API_KEY })
-async function startBot() {
-    const { state, saveCreds } = await useMultiFileAuthState('auth')
-    const sock = makeWASocket({ auth: state, browser: ["Mac OS", "Chrome", "14.4.1"] })
-    sock.ev.on('creds.update', saveCreds)
-    sock.ev.on('connection.update', async (update) => {
-        const { connection, lastDisconnect, qr } = update
-        if(qr){
-            console.log("SCANSIONA QUESTO QR CON WHATSAPP:")
-            qrcode.generate(qr, { small: true })
-        }
-        if(connection === 'close'){
-            const shouldReconnect = (lastDisconnect?.error)?.output?.statusCode!== DisconnectReason.loggedOut
-            if(shouldReconnect) startBot()
-        } else if(connection === 'open'){
-            console.log('BOT CONNESSO!')
-        }
-    })
-    sock.ev.on('messages.upsert', async ({ messages }) => {
-        const msg = messages[0]
-        if(!msg.message || msg.key.fromMe) return
-        const text = msg.message.conversation || msg.message.extendedTextMessage?.text
-        if(!text) return
-        const jid = msg.key.remoteJid
-        try {
-            await sock.sendPresenceUpdate('composing', jid)
-            const completion = await groq.chat.completions.create({
-                messages: [{ role: "system", content: "Sei un assistente utile su WhatsApp. Rispondi in italiano, breve." }, { role: "user", content: text }],
-                model: "openai/gpt-oss-20b"
-            })
-            await sock.sendMessage(jid, { text: completion.choices[0].message.content })
-        } catch(e){ 
-            console.log("ERRORE GROQ:", e) 
-            await sock.sendMessage(jid, { text: "Errore API: " + e.message })
-        }
-    })
-}
-startBot()
+let ultimoQR = null;
+
+app.get('/', (req,res)=> res.send('Bot attivo. Vai su /qr per vedere il QR'));
+app.get('/qr', async (req,res)=>{
+  if(!ultimoQR) return res.send('In attesa di QR... ricarica tra 5 sec <script>setTimeout(()=>location.reload(),3000)</script>');
+  const qrImg = await qrcode.toDataURL(ultimoQR);
+  res.send(`<h1>Scannerizza questo QR</h1><img src="${qrImg}" style="width:300px"><script>setTimeout(()=>location.reload(),10000)</script>`);
+});
+app.listen(process.env.PORT || 3000, ()=>console.log('Server web attivo'));
+
+const client = new Client({
+    authStrategy: new LocalAuth(),
+    puppeteer: { args: ['--no-sandbox','--disable-setuid-sandbox','--disable-dev-shm-usage'] }
+});
+
+client.on('qr', qr => {
+    ultimoQR = qr;
+    console.log('QR AGGIORNATO - Vai su /qr');
+});
+client.on('ready', ()=> console.log('Client is ready! BOT ONLINE'));
+client.initialize();
+
+// Qui sotto lascia la tua parte di IA Groq che avevi già
